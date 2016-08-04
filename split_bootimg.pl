@@ -41,10 +41,11 @@ use constant BOOT_ARGS_SIZE => 512;
 use constant UNSIGNED_SIZE => 4;
 
 # Parsed Values
-my $PAGE_SIZE = undef;          #page 大小
-my $KERNEL_SIZE = undef;      #kernel 大小
-my $RAMDISK_SIZE = undef;    #ramdisk 大小
-my $SECOND_SIZE = undef;     #second 大小
+my $PAGE_SIZE = undef;
+my $KERNEL_SIZE = undef;
+my $RAMDISK_SIZE = undef;
+my $SECOND_SIZE = undef;
+my $DT_SIZE = undef;
 
 ######################################################################
 ## Main Code
@@ -62,25 +63,30 @@ my $SECOND_SIZE = undef;     #second 大小
 ** +-----------------+
 ** | second stage    | o pages
 ** +-----------------+
+** | device tree     | p pages
+** +-----------------+
 **
 ** n = (kernel_size + page_size - 1) / page_size
 ** m = (ramdisk_size + page_size - 1) / page_size
 ** o = (second_size + page_size - 1) / page_size
+** p = (dt_size + page_size - 1) / page_size
 =cut
 
 my $n = int(($KERNEL_SIZE + $PAGE_SIZE - 1) / $PAGE_SIZE);
 my $m = int(($RAMDISK_SIZE + $PAGE_SIZE - 1) / $PAGE_SIZE);
 my $o = int(($SECOND_SIZE + $PAGE_SIZE - 1) / $PAGE_SIZE);
+my $p = int(($DT_SIZE + $PAGE_SIZE - 1) / $PAGE_SIZE);
 
-my $k_offset = $PAGE_SIZE;                                    # kernel的偏移量
-my $r_offset = $k_offset + ($n * $PAGE_SIZE);        # ramdisk的偏移量
-my $s_offset = $r_offset + ($m * $PAGE_SIZE);       # second的偏移量
-
+my $k_offset = $PAGE_SIZE;
+my $r_offset = $k_offset + ($n * $PAGE_SIZE);
+my $s_offset = $r_offset + ($m * $PAGE_SIZE);
+my $d_offset = $s_offset + ($o * $PAGE_SIZE);
 
 (my $base = $IMAGE_FN) =~ s/.*\/(.*)$/$1/;
-my $k_file = $base . "-kernel";                        # 解压出kernel后添加的名称后缀
-my $r_file = $base . "-ramdisk.gz";                  # 解压出ramdisk.gz后添加的名称后缀
-my $s_file = $base . "-second.gz";                  #解压出second.gz后添加的名称后缀
+my $k_file = $base . "-kernel";
+my $r_file = $base . "-ramdisk.gz";
+my $s_file = $base . "-second.gz";
+my $d_file = $base . "-dt.img";
 
 #调用dump_file方法根据kernel的偏移量截取出kernel
 # The kernel is always there
@@ -101,6 +107,12 @@ unless ($SECOND_SIZE == 0) {
     &dump_file($IMAGE_FN, $s_file, $s_offset, $SECOND_SIZE);
     print " complete.\n";
 }
+
+# The dt is always there
+print "Writing $d_file ...";
+&dump_file($IMAGE_FN, $d_file, $d_offset, $DT_SIZE);
+print " complete.\n";
+    
 ######################################################################
 ## Supporting Subroutines
 
@@ -119,7 +131,8 @@ struct boot_img_hdr
 
     unsigned tags_addr;    /* physical addr for kernel tags */
     unsigned page_size;    /* flash page size we assume */
-    unsigned unused[2];    /* future expansion: should be 0 */
+    unsigned dt size;    /* flash device tree size we assume */
+    unsigned unused;    /* future expansion: should be 0 */
 
     unsigned char name[BOOT_NAME_SIZE]; /* asciiz product name */
 
@@ -160,8 +173,12 @@ die "Android Magic not found in $fn. Giving up.\n";
     read(INF, $buf, UNSIGNED_SIZE);
     my ($p_size) = unpack("V", $buf);
 
+    # Read device tree size (assume little-endian)
+    read(INF, $buf, UNSIGNED_SIZE);
+    my ($d_size) = unpack("V", $buf);
+    
     # Ignore unused
-    read(INF, $buf, UNSIGNED_SIZE * 2);
+    read(INF, $buf, UNSIGNED_SIZE);
 
     # Read the name (board name)
     read(INF, $buf, BOOT_NAME_SIZE);
@@ -183,15 +200,25 @@ die "Android Magic not found in $fn. Giving up.\n";
     printf "Kernel size: %d (0x%08x)\n", $k_size, $k_size;
     printf "Ramdisk size: %d (0x%08x)\n", $r_size, $r_size;
     printf "Second size: %d (0x%08x)\n", $s_size, $s_size;
+    printf "DT size: %d (0x%08x)\n", $d_size, $d_size;
     printf "Board name: $name\n";
     printf "Command line: $cmdline\n";
-
+open(FD,">/tmp/command");
+my $position = index($cmdline,"\0");
+printf "==================== $position \n";
+my $subs = substr($cmdline, 0, $position);
+printf "==================== $subs \n";
+$subs = $subs."\n";
+print FD "$subs";
+close FD;
     # Save the values
     $PAGE_SIZE = $p_size;
     $KERNEL_SIZE = $k_size;
     $RAMDISK_SIZE = $r_size;
     $SECOND_SIZE = $s_size;
+    $DT_SIZE = $d_size;
 }
+
 sub dump_file {
     my ($infn, $outfn, $offset, $size) = @_;
     my $buf = undef;
